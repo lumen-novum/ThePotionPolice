@@ -9,14 +9,62 @@ import numpy as np
 
 
 st.set_page_config(page_title="Cauldron Map (local)", layout="wide")
-
-
-BASE = Path(__file__).resolve().parents[2]  # repo root
+BASE = Path(__file__).resolve().parents[1]  # repo root (project folder ThePotionPolice)
 BACKEND_DIR = BASE / 'backend'
 
-CAULDRONS_CSV = BACKEND_DIR / 'cauldrons.csv'
-DATA_CSV = BACKEND_DIR / 'cauldron_data.csv'
-RATES_CSV = BACKEND_DIR / 'cauldron_rates.csv'
+# Use the project's streamlit/data directory for CSVs (required for local preview)
+DATA_DIR = BASE / 'streamlit' / 'data'
+# Try to show a project logo at the top of the page (look in several common locations)
+logo_candidates = [
+    DATA_DIR / 'logo.png',
+    BASE / 'streamlit' / 'logo.png',
+    BASE / 'logo.png',
+    BASE / 'frontend' / 'src' / 'assets' / 'logo.svg',
+]
+logo_path = None
+for p in logo_candidates:
+    try:
+        if p.exists():
+            logo_path = p
+            break
+    except Exception:
+        continue
+if logo_path:
+    try:
+        # embed image as base64 and center via HTML to ensure precise centering
+        import base64
+        data = logo_path.read_bytes()
+        b64 = base64.b64encode(data).decode('ascii')
+        ext = logo_path.suffix.lower()
+        if ext == '.svg':
+            mime = 'image/svg+xml'
+        elif ext in ('.jpg', '.jpeg'):
+            mime = 'image/jpeg'
+        elif ext == '.png':
+            mime = 'image/png'
+        else:
+            mime = 'application/octet-stream'
+        html = f"<div style='text-align:center'><img src='data:{mime};base64,{b64}' width='300' /></div>"
+        st.markdown(html, unsafe_allow_html=True)
+    except Exception:
+        # best-effort: if embedding fails, fall back to st.image centered by columns
+        try:
+            left, mid, right = st.columns([1, 2, 1])
+            with mid:
+                st.image(str(logo_path), width=300)
+        except Exception:
+            pass
+
+
+BASE = Path(__file__).resolve().parents[1]  # repo root (project folder ThePotionPolice)
+BACKEND_DIR = BASE / 'backend'
+
+# Use the project's streamlit/data directory for CSVs (required for local preview)
+DATA_DIR = BASE / 'streamlit' / 'data'
+
+CAULDRONS_CSV = DATA_DIR / 'cauldrons.csv'
+DATA_CSV = DATA_DIR / 'cauldron_data.csv'
+RATES_CSV = DATA_DIR / 'cauldron_rates.csv'
 
 
 def load_cauldrons(path):
@@ -198,13 +246,205 @@ deck = pdk.Deck(layers=layers, initial_view_state=view_state, tooltip=tooltip)
 
 st.pydeck_chart(deck)
 
+# -------------------------------
+# Historic Data Playback (moved from streamlit/app.py)
+# -------------------------------
+st.markdown('---')
+st.header('Historic Data Playback')
+
+# Paths for playback (use DATA_DIR / DATA_CSV / CAULDRONS_CSV / RATES_CSV defined above)
+potion_path = DATA_CSV
+ticket_path = DATA_DIR / 'tickets.csv'
+cauldrons_path = CAULDRONS_CSV
+rates_path = RATES_CSV
+
+# Load potion (cauldron_data) dataframe
+potion_df = pd.DataFrame()
+if Path(potion_path).exists():
+    try:
+        potion_df = pd.read_csv(potion_path, parse_dates=['timestamp'])
+    except Exception:
+        # fallback: read then try to parse timestamp column manually
+        potion_df = pd.read_csv(potion_path)
+        for c in potion_df.columns:
+            if c.lower() == 'timestamp':
+                potion_df[c] = pd.to_datetime(potion_df[c], utc=True, errors='coerce')
+                break
+
+# Load tickets dataframe
+ticket_df = pd.DataFrame()
+if Path(ticket_path).exists():
+    try:
+        ticket_df = pd.read_csv(ticket_path, parse_dates=['date'])
+    except Exception:
+        ticket_df = pd.read_csv(ticket_path)
+        for c in ticket_df.columns:
+            if c.lower() == 'date':
+                ticket_df[c] = pd.to_datetime(ticket_df[c], utc=True, errors='coerce')
+                break
+
+# Ensure cauldrons_df / rates_df are available (they were loaded earlier in this file)
+try:
+    _cauldrons_df = cauldrons_df.copy() if 'cauldrons_df' in globals() else pd.read_csv(cauldrons_path) if Path(cauldrons_path).exists() else pd.DataFrame()
+except Exception:
+    _cauldrons_df = pd.DataFrame()
+try:
+    _rates_df = rates_df.copy() if 'rates_df' in globals() else pd.read_csv(rates_path) if Path(rates_path).exists() else pd.DataFrame()
+except Exception:
+    _rates_df = pd.DataFrame()
+
+# Transform potion_df to long form and merge with cauldrons/rates
+potion_long = pd.DataFrame()
+if not potion_df.empty:
+    ts_col = None
+    for c in potion_df.columns:
+        if c.lower() == 'timestamp':
+            ts_col = c
+            break
+    if ts_col is not None:
+        potion_long = potion_df.melt(id_vars=[ts_col], var_name='cauldron_id', value_name='level')
+        # merge cauldron info if available
+        if not _cauldrons_df.empty and 'id' in _cauldrons_df.columns:
+            potion_long = potion_long.merge(_cauldrons_df, left_on='cauldron_id', right_on='id', how='left')
+        # merge rates if available (best-effort)
+        if not _rates_df.empty:
+            if 'cauldron_id' in _rates_df.columns:
+                potion_long = potion_long.merge(_rates_df, on='cauldron_id', how='left')
+            elif 'id' in _rates_df.columns:
+                potion_long = potion_long.merge(_rates_df, left_on='cauldron_id', right_on='id', how='left')
+    else:
+        st.info('potion data missing a timestamp column; cannot show historic playback')
+else:
+    st.info('No cauldron_data.csv found for playback')
+
+# Prepare ticket_long
+ticket_long = ticket_df.copy() if not ticket_df.empty else pd.DataFrame()
+if not ticket_long.empty:
+    for c in ticket_long.columns:
+        if c.lower() == 'date':
+            ticket_long = ticket_long.rename(columns={c: 'date'})
+            ticket_long['date'] = pd.to_datetime(ticket_long['date'], utc=True, errors='coerce')
+            break
+
+# Date selection bounds
+min_date_val = None
+max_date_val = None
+if not potion_long.empty and 'timestamp' in potion_long.columns:
+    try:
+        min_date = potion_long[potion_long.columns[0]].min()
+        max_date = potion_long[potion_long.columns[0]].max()
+    except Exception:
+        min_date = None
+        max_date = None
+else:
+    min_date = None
+    max_date = None
+if not ticket_long.empty and 'date' in ticket_long.columns:
+    try:
+        min_date = min([d for d in [min_date, ticket_long['date'].min()] if d is not None])
+        max_date = max([d for d in [max_date, ticket_long['date'].max()] if d is not None])
+    except Exception:
+        pass
+if min_date is not None and pd.notna(min_date):
+    try:
+        min_date_val = pd.to_datetime(min_date).date()
+    except Exception:
+        min_date_val = None
+if max_date is not None and pd.notna(max_date):
+    try:
+        max_date_val = pd.to_datetime(max_date).date()
+    except Exception:
+        max_date_val = None
+
+if min_date_val and max_date_val:
+    selected_date = st.date_input('Select Date', min_value=min_date_val, max_value=max_date_val, value=min_date_val)
+else:
+    selected_date = st.date_input('Select Date')
+
+# Cauldron selection
+if not potion_long.empty:
+    cauldron_options = list(potion_long['cauldron_id'].dropna().unique())
+else:
+    cauldron_options = list(_cauldrons_df['id'].unique()) if not _cauldrons_df.empty and 'id' in _cauldrons_df.columns else []
+
+selected_cauldrons = st.multiselect('Select Cauldrons', options=cauldron_options, default=cauldron_options)
+
+# Filter data
+if not potion_long.empty:
+    ts_col = [c for c in potion_long.columns if c.lower() == 'timestamp']
+    ts_col = ts_col[0] if ts_col else potion_long.columns[0]
+    filtered_potion = potion_long[(potion_long['cauldron_id'].isin(selected_cauldrons)) & (pd.to_datetime(potion_long[ts_col]).dt.date <= selected_date)]
+else:
+    filtered_potion = pd.DataFrame()
+
+if not ticket_long.empty:
+    filtered_ticket = ticket_long[(ticket_long['cauldron_id'].isin(selected_cauldrons)) & (ticket_long['date'].dt.date <= selected_date)]
+else:
+    filtered_ticket = pd.DataFrame()
+
+# Colors & names
+import matplotlib.colors as mcolors
+palette = plt.cm.get_cmap('tab20')
+cauldron_colors = {}
+for i, cid in enumerate(cauldron_options):
+    cauldron_colors[cid] = mcolors.to_hex(palette(i % 20))
+
+cauldron_names = dict(zip(_cauldrons_df['id'], _cauldrons_df['name'])) if not _cauldrons_df.empty and 'id' in _cauldrons_df.columns and 'name' in _cauldrons_df.columns else {}
+
+# -------------------------------
+# Visualize Potion Levels
+# -------------------------------
+st.subheader('Potion Levels Over Time')
+if not filtered_potion.empty:
+    fig, ax = plt.subplots(figsize=(10, 5))
+    for cauldron in selected_cauldrons:
+        df = filtered_potion[filtered_potion['cauldron_id'] == cauldron]
+        if df.empty:
+            continue
+        times = pd.to_datetime(df[ts_col], errors='coerce')
+        ax.plot(times, pd.to_numeric(df['level'], errors='coerce'), label=cauldron_names.get(cauldron, cauldron), color=cauldron_colors.get(cauldron, '#333333'))
+    ax.set_xlabel('Time')
+    ax.set_ylabel('Potion Level')
+    ax.legend()
+    st.pyplot(fig)
+else:
+    st.info('No historic potion data available for the selected cauldrons/date')
+
+# -------------------------------
+# Tickets Collected Over Time
+# -------------------------------
+st.subheader('Tickets Collected Over Time')
+if not filtered_ticket.empty:
+    try:
+        # make naive if tz-aware
+        try:
+            filtered_ticket['date'] = filtered_ticket['date'].dt.tz_localize(None)
+        except Exception:
+            pass
+        ticket_sum = filtered_ticket.groupby(['date', 'cauldron_id'])['amount_collected'].sum().reset_index()
+        fig, ax = plt.subplots(figsize=(10, 5))
+        for cauldron in selected_cauldrons:
+            df = ticket_sum[ticket_sum['cauldron_id'] == cauldron]
+            if df.empty:
+                continue
+            ax.plot(df['date'], df['amount_collected'], label=cauldron_names.get(cauldron, cauldron), color=cauldron_colors.get(cauldron, '#333333'))
+        ax.set_xlabel('Date')
+        ax.set_ylabel('Amount Collected')
+        ax.legend()
+        st.pyplot(fig)
+    except Exception:
+        st.info('Unable to render tickets plot with the available ticket data')
+else:
+    st.info('No ticket data available for the selected cauldrons/date')
+
+
 
 ## Ticket matching diagnostics (embedded)
 st.markdown('---')
 st.header('Ticket matching diagnostics (local CSV)')
 
-TICKETS_CSV = BACKEND_DIR / 'tickets.csv'
-DRAINS_CSV = BACKEND_DIR / 'drain_events.csv'
+TICKETS_CSV = DATA_DIR / 'tickets.csv'
+DRAINS_CSV = DATA_DIR / 'drain_events.csv'
 
 
 def load_tickets(path):
