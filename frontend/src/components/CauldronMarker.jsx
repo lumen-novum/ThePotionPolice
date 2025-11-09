@@ -1,6 +1,7 @@
 import React from 'react'
 import { Marker, Popup } from 'react-leaflet'
 import L from 'leaflet'
+import potionGreen from '../assets/cauldrons/potion-green.svg'
 
 function createDivIcon(cauldron, currentLevelPercent) {
   const html = `
@@ -29,7 +30,13 @@ export default function CauldronMarker({ cauldron, currentTime, onClick }) {
     }
   }
 
-  const icon = createDivIcon(cauldron, Math.max(0, Math.min(100, percent)))
+  // Use a uniform potion-green SVG icon for all cauldrons on the map
+  const icon = new L.Icon({
+    iconUrl: potionGreen,
+    iconSize: [40, 40],
+    iconAnchor: [20, 40],
+    popupAnchor: [0, -40]
+  })
 
   return (
     <Marker
