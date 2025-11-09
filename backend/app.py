@@ -143,39 +143,41 @@ def cauldrons():
 
 @app.route('/api/network-map')
 def network_map():
-    # Build a network map connecting adjacent cauldrons in the metadata order.
-    # Returns a list of path objects: { "coordinates": [[lat,lng], ...], "from": id, "to": id, "color": "#..." }
+    # Build a network map that includes both locations and adjacent paths.
+    # Response shape:
+    # { "locations": [ {id,name,lat,lng}, ... ], "paths": [ {from,to,coordinates:[[lat,lng],...], color}, ... ] }
     cauldron_items = list(_CAULDRON_META.items())
+    locations = []
     paths = []
 
-    # If there are N cauldrons, create paths for (0->1, 1->2, 2->3, ...)
+    # Locations: include all cauldrons with their coordinates
+    for cid, meta in cauldron_items:
+        lat = meta.get('lat')
+        lng = meta.get('lng')
+        # skip if no coordinates (None) or both zero
+        if lat is None or lng is None:
+            continue
+        if lat == 0 and lng == 0:
+            continue
+        locations.append({'id': cid, 'name': meta.get('name'), 'lat': lat, 'lng': lng})
+
+    # Paths: connect adjacent cauldrons (A->B, B->C, ...), using the metadata order
     for i in range(len(cauldron_items) - 1):
         id_a, a_meta = cauldron_items[i]
         id_b, b_meta = cauldron_items[i + 1]
-
-        # ensure coordinates exist and are reasonable (skip if missing)
         a_lat = a_meta.get('lat')
         a_lng = a_meta.get('lng')
         b_lat = b_meta.get('lat')
         b_lng = b_meta.get('lng')
+        # skip if coordinates are missing or invalid
         if a_lat is None or a_lng is None or b_lat is None or b_lng is None:
             continue
-
-        # skip obviously-empty coordinates (0,0) which likely indicate missing data
         if (a_lat == 0 and a_lng == 0) or (b_lat == 0 and b_lng == 0):
             continue
-
         coords = [[a_lat, a_lng], [b_lat, b_lng]]
-        # choose a color (could be enhanced to vary per-edge)
-        color = '#2b8cbe'
-        paths.append({
-            'from': id_a,
-            'to': id_b,
-            'coordinates': coords,
-            'color': color
-        })
+        paths.append({'from': id_a, 'to': id_b, 'coordinates': coords, 'color': '#2b8cbe'})
 
-    return jsonify(paths)
+    return jsonify({'locations': locations, 'paths': paths})
 
 
 @app.route('/api/tickets')
@@ -184,8 +186,3 @@ def tickets():
         {"id": "t1", "summary": "Low potion level at North Cauldron", "status": "open", "created_at": "2025-11-09T08:00:00Z"},
         {"id": "t2", "summary": "Sensor offline at East Cauldron", "status": "investigating", "created_at": "2025-11-08T21:30:00Z"}
     ])
-
-
-if __name__ == '__main__':
-    # Run the development server on localhost:5000
-    app.run(host='127.0.0.1', port=5000, debug=True)
